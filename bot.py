@@ -1354,7 +1354,7 @@ async def add_membership_lessons(update, context):
     except ValueError:
         await update.message.reply_text("❌ Введите число")
         return LESSONS
-
+     
 async def add_membership_days(update, context):
     # Проверяем, что мы действительно в диалоге абонемента
     if 'mem_lessons' not in context.user_data:
