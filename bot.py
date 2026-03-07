@@ -1244,7 +1244,8 @@ async def request_name_entry(update, context):
             # Это диалог добавления в группу - пропускаем
             logger.info(f"👌 Админ {uid} в диалоге добавления в группу, продолжаем")
             return ConversationHandler.END
-          async def request_phone(update, context):
+         
+     async def request_phone(update, context):
     """Обработчик телефона в заявке"""
     uid = update.effective_user.id
     
