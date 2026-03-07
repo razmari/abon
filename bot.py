@@ -334,12 +334,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"👋 {student[1]}", reply_markup=InlineKeyboardMarkup(kb))
         return
     
-    # Для новых пользователей
-    kb = [
-        [InlineKeyboardButton("👨‍🎓 Я ученик", callback_data="role_student")], 
-        [InlineKeyboardButton("👪 Я родитель", callback_data="role_parent")]
-    ]
-    await update.message.reply_text("👋 Привет! Кто ты?", reply_markup=InlineKeyboardMarkup(kb))
+     # Для новых пользователей - сразу запрашиваем ФИО
+    context.user_data['request_role'] = 'student'  # По умолчанию ученик
+    await update.message.reply_text(
+        "👋 Добро пожаловать!\n\n"
+        "Для регистрации введите ваши имя и фамилию:"
+    )
+    return REQUEST_NAME
 
 # ===== ПОКАЗ ЗАЯВОК =====
 async def show_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
