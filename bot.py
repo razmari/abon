@@ -1502,9 +1502,6 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
-
- 
-    ))
     
     # Диалог добавления абонемента
     app.add_handler(ConversationHandler(
