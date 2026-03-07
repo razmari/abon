@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 # Загрузка переменных окружения
 load_dotenv()
 
-# Парсинг ID администраторов
+# Парсинг ID администраторов - поддерживает два админа
 admin_raw = os.getenv("ADMIN_CHAT_ID", "")
+# Убираем все пробелы и лишние символы, оставляем только цифры и запятые
 admin_clean = ''.join(c for c in admin_raw if c.isdigit() or c == ',')
 ADMIN_IDS = [int(x) for x in admin_clean.split(',') if x.strip()]
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -222,7 +223,7 @@ async def notify_admin(student_id, new_balance, context):
         return
     student_name = student[0]
     
-    # Уведомление админам
+    # Уведомление админам - для ВСЕХ админов в списке
     for admin_id in ADMIN_IDS:
         try:
             if new_balance < 0:
@@ -275,7 +276,6 @@ async def check_expiring_memberships(context: ContextTypes.DEFAULT_TYPE):
 
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ENTRY POINTS =====
 async def add_student_entry(update, context): return NAME
-async def add_parent_entry(update, context): return PARENT_NAME
 async def add_group_entry(update, context): return GROUP_NAME
 async def membership_lessons_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("🎯 membership_lessons_entry ВЫЗВАНА!")
@@ -287,7 +287,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     logger.info(f"🚀 /start от пользователя {uid}")
     
-    # Для администраторов
+    # Для администраторов - работает для ВСЕХ админов в списке
     if uid in ADMIN_IDS:
         kb = [
             [InlineKeyboardButton("👥 Ученики", callback_data="admin_students")],
@@ -382,7 +382,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик всех callback кнопок"""
     # Если это не callback query - выходим
     if not update.callback_query:
-        logger.warning("⚠️ Получено сообщение не callback в button_handler")
         return
     
     q = update.callback_query
@@ -1219,10 +1218,183 @@ async def show_mark_group(q, context, gid):
         if "Message is not modified" not in str(e):
             logger.error(f"Ошибка при обновлении сообщения: {e}")
 
-# ===== ДИАЛОГИ (ConversationHandler) =====
 # ===== ДИАЛОГИ =====
+# 1. Диалог добавления ученика
+async def add_student_name(update, context):
+    context.user_data['name'] = update.message.text
+    await update.message.reply_text("📞 Введите телефон (например, +375291234567):")
+    return PHONE
 
-# 1. Диалог заявки - ТОЧКА ВХОДА
+async def add_student_phone(update, context):
+    context.user_data['phone'] = update.message.text
+    await update.message.reply_text("🆔 Введите Telegram ID (число):")
+    return TG_ID
+
+async def add_student_id(update, context):
+    try:
+        tid = int(update.message.text)
+        cursor.execute("INSERT INTO students (telegram_id, name, phone) VALUES (?, ?, ?)", 
+                      (tid, context.user_data['name'], context.user_data['phone']))
+        conn.commit()
+        await update.message.reply_text("✅ Ученик добавлен")
+    except Exception as e:
+        logger.error(f"Ошибка добавления ученика: {e}")
+        await update.message.reply_text("❌ Ошибка. Проверьте, что ID - число и уникально")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# 2. Диалог добавления группы
+async def add_group_name(update, context):
+    name = update.message.text
+    logger.info(f"📝 add_group_name: получено название группы: {name}")
+    try:
+        cursor.execute("INSERT INTO groups (name) VALUES (?)", (name,))
+        conn.commit()
+        await update.message.reply_text(f"✅ Группа '{name}' создана")
+    except Exception as e:
+        logger.error(f"Ошибка создания группы: {e}")
+        await update.message.reply_text("❌ Ошибка (возможно, группа уже существует)")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# 3. Диалог добавления абонемента
+async def add_membership_lessons(update, context):
+    # Проверяем, что мы действительно в диалоге абонемента
+    if 'membership_student' not in context.user_data:
+        await update.message.reply_text("❌ Ошибка: начните добавление абонемента заново")
+        return ConversationHandler.END
+    
+    try:
+        lessons = int(update.message.text)
+        if lessons <= 0:
+            await update.message.reply_text("❌ Введите положительное число")
+            return LESSONS
+        context.user_data['mem_lessons'] = lessons
+        await update.message.reply_text("📅 Введите количество дней действия:")
+        return DAYS
+    except ValueError:
+        await update.message.reply_text("❌ Введите число")
+        return LESSONS
+
+async def add_membership_days(update, context):
+    # Проверяем, что мы действительно в диалоге абонемента
+    if 'mem_lessons' not in context.user_data:
+        await update.message.reply_text("❌ Ошибка: начните добавление абонемента заново")
+        return ConversationHandler.END
+    
+    try:
+        days = int(update.message.text)
+        if days <= 0:
+            await update.message.reply_text("❌ Введите положительное число")
+            return DAYS
+        context.user_data['mem_days'] = days
+        await add_membership_final(update, context)
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text("❌ Введите число")
+        return DAYS
+
+async def add_membership_final(update, context):
+    try:
+        student_id = context.user_data.get('membership_student')
+        if not student_id:
+            await update.message.reply_text("❌ Ошибка: ученик не выбран")
+            return
+            
+        student = cursor.execute("SELECT name FROM students WHERE id = ?", (student_id,)).fetchone()
+        if not student:
+            await update.message.reply_text("❌ Ученик не найден")
+            return
+        
+        new_lessons = context.user_data.get('mem_lessons')
+        days = context.user_data.get('mem_days')
+        new_valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        
+        # Проверяем существующие абонементы с долгом
+        total_balance = cursor.execute("""
+            SELECT SUM(lessons_left) FROM memberships
+            WHERE student_id = ? AND status = 'active'
+        """, (student_id,)).fetchone()[0] or 0
+        
+        if total_balance < 0:
+            debt = abs(total_balance)
+            
+            if new_lessons <= debt:
+                cursor.execute("""
+                    UPDATE memberships SET lessons_left = lessons_left + ?
+                    WHERE student_id = ? AND status = 'active'
+                """, (new_lessons, student_id))
+                await update.message.reply_text(
+                    f"✅ Долг частично погашен. Текущий баланс: {total_balance + new_lessons}"
+                )
+            else:
+                remaining = new_lessons - debt
+                
+                cursor.execute("""
+                    UPDATE memberships SET lessons_left = 0
+                    WHERE student_id = ? AND status = 'active' AND lessons_left < 0
+                """, (student_id,))
+                
+                cursor.execute("""
+                    INSERT INTO memberships (student_id, lessons_left, valid_until, status, frozen_days)
+                    VALUES (?, ?, ?, 'active', 0)
+                """, (student_id, remaining, new_valid_until))
+                
+                await update.message.reply_text(
+                    f"✅ Долг погашен. Остаток {remaining} занятий зачислен на новый абонемент (до {new_valid_until})"
+                )
+        else:
+            cursor.execute("""
+                INSERT INTO memberships (student_id, lessons_left, valid_until, status, frozen_days)
+                VALUES (?, ?, ?, 'active', 0)
+            """, (student_id, new_lessons, new_valid_until))
+            
+            await update.message.reply_text(
+                f"✅ Добавлен новый абонемент на {new_lessons} занятий (до {new_valid_until})"
+            )
+        
+        conn.commit()
+        await notify_admin(student_id, new_lessons, context)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в add_membership_final: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    context.user_data.clear()
+
+# 4. Диалог продления абонемента
+async def extend_days_input(update, context):
+    try:
+        days = int(update.message.text)
+        if days <= 0:
+            await update.message.reply_text("❌ Введите положительное число")
+            return EXTEND_DAYS
+            
+        sid = context.user_data.get('extend_student')
+        if not sid:
+            await update.message.reply_text("❌ Ошибка: ученик не выбран")
+            return ConversationHandler.END
+            
+        mem = cursor.execute("""
+            SELECT id, valid_until FROM memberships 
+            WHERE student_id = ? AND status = 'active' 
+            ORDER BY valid_until ASC LIMIT 1
+        """, (sid,)).fetchone()
+        
+        if mem:
+            new = (datetime.strptime(mem[1], "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+            cursor.execute("UPDATE memberships SET valid_until = ? WHERE id = ?", (new, mem[0]))
+            conn.commit()
+            await update.message.reply_text(f"✅ Продлён до {new}")
+        else:
+            await update.message.reply_text("❌ Нет активных абонементов")
+    except Exception as e:
+        logger.error(f"Ошибка продления: {e}")
+        await update.message.reply_text("❌ Ошибка")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# 5. Диалог заявки
 async def request_name_entry(update, context):
     """ТОЧКА ВХОДА в диалог заявки - срабатывает на любое сообщение"""
     uid = update.effective_user.id
@@ -1307,242 +1479,7 @@ async def request_phone(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
-# 1. Диалог заявки
-async def request_name(update, context):
-    context.user_data['req_name'] = update.message.text
-    await update.message.reply_text("📞 Теперь напиши свой телефон (например, +375291234567):")
-    return REQUEST_PHONE
-    
-    # Сохраняем заявку в БД
-    cursor.execute("""
-        INSERT INTO requests (user_id, username, name, phone, role, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (uid, username, name, phone, role, now))
-    conn.commit()
-    request_id = cursor.lastrowid
-    
-    # Отправляем админам с ID заявки
-    sent_count = 0
-    for admin_id in ADMIN_IDS:
-        try:
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Принять", callback_data=f"approve_req_{request_id}"),
-                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_req_{request_id}")
-            ]])
-            
-            await context.bot.send_message(
-                admin_id, 
-                f"📩 Заявка #{request_id} от @{username}\n"
-                f"Имя: {name}\n"
-                f"Телефон: {phone}\n"
-                f"Роль: {role_text}\n"
-                f"ID: {uid}",
-                reply_markup=kb
-            )
-            sent_count += 1
-        except Exception as e:
-            logger.error(f"Ошибка отправки админу {admin_id}: {e}")
-    
-    if sent_count == 0:
-        await update.message.reply_text("❌ Техническая ошибка. Попробуйте позже или свяжитесь с администратором.")
-    else:
-        await update.message.reply_text(f"✅ Заявка #{request_id} отправлена администратору. Ожидайте подтверждения.")
-    
-    context.user_data.clear()
-    return ConversationHandler.END
-
-# 2. Диалог добавления ученика
-async def add_student_name(update, context):
-    context.user_data['name'] = update.message.text
-    await update.message.reply_text("📞 Введите телефон (например, +375291234567):")
-    return PHONE
-
-async def add_student_phone(update, context):
-    context.user_data['phone'] = update.message.text
-    await update.message.reply_text("🆔 Введите Telegram ID (число):")
-    return TG_ID
-
-async def add_student_id(update, context):
-    try:
-        tid = int(update.message.text)
-        cursor.execute("INSERT INTO students (telegram_id, name, phone) VALUES (?, ?, ?)", 
-                      (tid, context.user_data['name'], context.user_data['phone']))
-        conn.commit()
-        await update.message.reply_text("✅ Ученик добавлен")
-    except Exception as e:
-        logger.error(f"Ошибка добавления ученика: {e}")
-        await update.message.reply_text("❌ Ошибка. Проверьте, что ID - число и уникально")
-    context.user_data.clear()
-    return ConversationHandler.END
-
-# 3. Диалог добавления родителя
-async def add_parent_name(update, context):
-    context.user_data['name'] = update.message.text
-    await update.message.reply_text("📞 Введите телефон (например, +375291234567):")
-    return PARENT_PHONE
-
-async def add_parent_phone(update, context):
-    context.user_data['phone'] = update.message.text
-    await update.message.reply_text("🆔 Введите Telegram ID (число):")
-    return PARENT_TG
-
-async def add_parent_id(update, context):
-    try:
-        tid = int(update.message.text)
-        cursor.execute("INSERT INTO parents (telegram_id, name, phone) VALUES (?, ?, ?)", 
-                      (tid, context.user_data['name'], context.user_data['phone']))
-        conn.commit()
-        await update.message.reply_text("✅ Родитель добавлен")
-    except Exception as e:
-        logger.error(f"Ошибка добавления родителя: {e}")
-        await update.message.reply_text("❌ Ошибка")
-    context.user_data.clear()
-    return ConversationHandler.END
-
-# 4. Диалог добавления абонемента
-async def add_membership_lessons(update, context):
-    try:
-        lessons = int(update.message.text)
-        if lessons <= 0:
-            await update.message.reply_text("❌ Введите положительное число")
-            return LESSONS
-        context.user_data['mem_lessons'] = lessons
-        await update.message.reply_text("📅 Введите количество дней действия:")
-        return DAYS
-    except ValueError:
-        await update.message.reply_text("❌ Введите число")
-        return LESSONS
-
-async def add_membership_days(update, context):
-    try:
-        days = int(update.message.text)
-        if days <= 0:
-            await update.message.reply_text("❌ Введите положительное число")
-            return DAYS
-        context.user_data['mem_days'] = days
-        await add_membership_final(update, context)
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ Введите число")
-        return DAYS
-
-async def add_membership_final(update, context):
-    try:
-        student_id = context.user_data.get('membership_student')
-        if not student_id:
-            await update.message.reply_text("❌ Ошибка: ученик не выбран")
-            return ConversationHandler.END
-            
-        student = cursor.execute("SELECT name FROM students WHERE id = ?", (student_id,)).fetchone()
-        if not student:
-            await update.message.reply_text("❌ Ученик не найден")
-            return ConversationHandler.END
-        
-        new_lessons = context.user_data.get('mem_lessons')
-        days = context.user_data.get('mem_days')
-        new_valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-        
-        # Проверяем существующие абонементы с долгом
-        total_balance = cursor.execute("""
-            SELECT SUM(lessons_left) FROM memberships
-            WHERE student_id = ? AND status = 'active'
-        """, (student_id,)).fetchone()[0] or 0
-        
-        if total_balance < 0:
-            debt = abs(total_balance)
-            
-            if new_lessons <= debt:
-                # Частично погашаем долг
-                cursor.execute("""
-                    UPDATE memberships SET lessons_left = lessons_left + ?
-                    WHERE student_id = ? AND status = 'active'
-                """, (new_lessons, student_id))
-                await update.message.reply_text(
-                    f"✅ Долг частично погашен. Текущий баланс: {total_balance + new_lessons}"
-                )
-            else:
-                # Погашаем долг и создаём новый абонемент на остаток
-                remaining = new_lessons - debt
-                
-                cursor.execute("""
-                    UPDATE memberships SET lessons_left = 0
-                    WHERE student_id = ? AND status = 'active' AND lessons_left < 0
-                """, (student_id,))
-                
-                cursor.execute("""
-                    INSERT INTO memberships (student_id, lessons_left, valid_until, status, frozen_days)
-                    VALUES (?, ?, ?, 'active', 0)
-                """, (student_id, remaining, new_valid_until))
-                
-                await update.message.reply_text(
-                    f"✅ Долг погашен. Остаток {remaining} занятий зачислен на новый абонемент (до {new_valid_until})"
-                )
-        else:
-            # Просто добавляем новый абонемент
-            cursor.execute("""
-                INSERT INTO memberships (student_id, lessons_left, valid_until, status, frozen_days)
-                VALUES (?, ?, ?, 'active', 0)
-            """, (student_id, new_lessons, new_valid_until))
-            
-            await update.message.reply_text(
-                f"✅ Добавлен новый абонемент на {new_lessons} занятий (до {new_valid_until})"
-            )
-        
-        conn.commit()
-        await notify_admin(student_id, new_lessons, context)
-        
-    except Exception as e:
-        logger.error(f"Ошибка в add_membership_final: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-    
-    context.user_data.clear()
-
-# 5. Диалог добавления группы
-async def add_group_name(update, context):
-    name = update.message.text
-    try:
-        cursor.execute("INSERT INTO groups (name) VALUES (?)", (name,))
-        conn.commit()
-        await update.message.reply_text(f"✅ Группа '{name}' создана")
-    except Exception as e:
-        logger.error(f"Ошибка создания группы: {e}")
-        await update.message.reply_text("❌ Ошибка (возможно, группа уже существует)")
-    context.user_data.clear()
-    return ConversationHandler.END
-
-# 6. Диалог продления абонемента
-async def extend_days_input(update, context):
-    try:
-        days = int(update.message.text)
-        if days <= 0:
-            await update.message.reply_text("❌ Введите положительное число")
-            return EXTEND_DAYS
-            
-        sid = context.user_data.get('extend_student')
-        if not sid:
-            await update.message.reply_text("❌ Ошибка: ученик не выбран")
-            return ConversationHandler.END
-            
-        mem = cursor.execute("""
-            SELECT id, valid_until FROM memberships 
-            WHERE student_id = ? AND status = 'active' 
-            ORDER BY valid_until ASC LIMIT 1
-        """, (sid,)).fetchone()
-        
-        if mem:
-            new = (datetime.strptime(mem[1], "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
-            cursor.execute("UPDATE memberships SET valid_until = ? WHERE id = ?", (new, mem[0]))
-            conn.commit()
-            await update.message.reply_text(f"✅ Продлён до {new}")
-        else:
-            await update.message.reply_text("❌ Нет активных абонементов")
-    except Exception as e:
-        logger.error(f"Ошибка продления: {e}")
-        await update.message.reply_text("❌ Ошибка")
-    context.user_data.clear()
-    return ConversationHandler.END
-
-# 7. Отмена диалога
+# 6. Отмена диалога
 async def cancel(update, context):
     await update.message.reply_text("❌ Отменено")
     context.user_data.clear()
@@ -1553,18 +1490,20 @@ def main():
     """Главная функция запуска бота"""
     app = Application.builder().token(BOT_TOKEN).build()
     
+    # Принудительно сбрасываем вебхук
+    import asyncio
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
+    except:
+        pass
+    
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("requests", show_requests))
     
-    # Диалог заявки
-    app.add_handler(ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, request_name_entry)],
-        states={
-            REQUEST_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_phone)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-    ))
+    # ===== СНАЧАЛА ДИАЛОГИ С CALLBACK =====
     
     # Диалог добавления ученика
     app.add_handler(ConversationHandler(
@@ -1573,6 +1512,15 @@ def main():
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_student_name)],
             PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_student_phone)],
             TG_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_student_id)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    ))
+    
+    # Диалог добавления группы
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_group_entry, pattern="^add_group$")],
+        states={
+            GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_group_name)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
@@ -1587,22 +1535,10 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
-    # Диалог добавления группы
-    app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_group_entry, pattern="^add_group$")],
-        states={
-            GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_group_name)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-    ))
-    
-    # ===== ИСПРАВЛЕННЫЙ ДИАЛОГ ПРОДЛЕНИЯ =====
-    # Функция входа в диалог продления
+    # Диалог продления
     async def extend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Вход в диалог продления"""
         return EXTEND_DAYS
     
-    # Добавляем диалог продления с исправленной функцией
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(extend_entry, pattern="^extend_student_")],
         states={
@@ -1610,7 +1546,15 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
-    # ===== КОНЕЦ ИСПРАВЛЕНИЯ =====
+    
+    # ===== ПОТОМ ДИАЛОГ ЗАЯВКИ =====
+    app.add_handler(ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, request_name_entry)],
+        states={
+            REQUEST_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_phone)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    ))
     
     # Обработчик всех callback-кнопок (должен быть последним)
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -1626,4 +1570,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
