@@ -1432,6 +1432,58 @@ async def extend_days_input(update, context):
         await update.message.reply_text("❌ Ошибка")
     context.user_data.clear()
     return ConversationHandler.END
+ async def request_phone(update, context):
+    """Обработчик телефона в заявке"""
+    uid = update.effective_user.id
+    
+    # Проверяем, что пользователь действительно в диалоге заявки
+    if not context.user_data.get('in_request'):
+        return ConversationHandler.END
+    
+    name = context.user_data.get('req_name')
+    phone = update.message.text
+    role = context.user_data.get('request_role', 'student')
+    username = update.effective_user.username or "нет"
+    role_text = "ученик" if role == "student" else "родитель"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    logger.info(f"📩 Заявка от {username} ({uid}): {name}, {phone}, роль: {role_text}")
+    
+    cursor.execute("""
+        INSERT INTO requests (user_id, username, name, phone, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (uid, username, name, phone, role, now))
+    conn.commit()
+    request_id = cursor.lastrowid
+    
+    sent_count = 0
+    for admin_id in ADMIN_IDS:
+        try:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Принять", callback_data=f"approve_req_{request_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_req_{request_id}")
+            ]])
+            
+            await context.bot.send_message(
+                admin_id, 
+                f"📩 Заявка #{request_id} от @{username}\n"
+                f"Имя: {name}\n"
+                f"Телефон: {phone}\n"
+                f"Роль: {role_text}\n"
+                f"ID: {uid}",
+                reply_markup=kb
+            )
+            sent_count += 1
+        except Exception as e:
+            logger.error(f"Ошибка отправки админу {admin_id}: {e}")
+    
+    if sent_count == 0:
+        await update.message.reply_text("❌ Техническая ошибка. Попробуйте позже или свяжитесь с администратором.")
+    else:
+        await update.message.reply_text(f"✅ Заявка #{request_id} отправлена администратору. Ожидайте подтверждения.")
+    
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # 6. Отмена диалога
 async def cancel(update, context):
