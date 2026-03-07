@@ -278,6 +278,7 @@ async def add_student_entry(update, context): return NAME
 async def add_parent_entry(update, context): return PARENT_NAME
 async def add_group_entry(update, context): return GROUP_NAME
 async def membership_lessons_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("🎯 membership_lessons_entry ВЫЗВАНА!")
     return LESSONS
 
 # ===== СТАРТ (БЕЗ РОДИТЕЛЕЙ) =====
