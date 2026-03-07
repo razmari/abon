@@ -1335,8 +1335,9 @@ async def add_student_id(update, context):
 
 # 3. Диалог добавления абонемента
 async def add_membership_lessons(update, context):
+    """Обработчик ввода количества занятий при добавлении абонемента"""
     logger.info(f"📝 add_membership_lessons: получено число: {update.message.text}")
-    # ... остальной код
+    
     # Проверяем, что мы действительно в диалоге абонемента
     if 'membership_student' not in context.user_data:
         await update.message.reply_text("❌ Ошибка: начните добавление абонемента заново")
