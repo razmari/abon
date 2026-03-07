@@ -1220,6 +1220,92 @@ async def show_mark_group(q, context, gid):
             logger.error(f"Ошибка при обновлении сообщения: {e}")
 
 # ===== ДИАЛОГИ (ConversationHandler) =====
+# ===== ДИАЛОГИ =====
+
+# 1. Диалог заявки - ТОЧКА ВХОДА
+async def request_name_entry(update, context):
+    """ТОЧКА ВХОДА в диалог заявки - срабатывает на любое сообщение"""
+    uid = update.effective_user.id
+    
+    # ЕСЛИ ЭТО АДМИН
+    if uid in ADMIN_IDS:
+        logger.warning(f"⚠️ Админ {uid} попытался войти в диалог заявки")
+        
+        # ПРОВЕРЯЕМ, В КАКОМ ДИАЛОГЕ АДМИН
+        if 'membership_student' in context.user_data:
+            logger.info(f"👌 Админ {uid} в диалоге абонемента, пропускаем")
+            return
+        
+        if 'extend_student' in context.user_data:
+            logger.info(f"👌 Админ {uid} в диалоге продления, пропускаем")
+            return
+        
+        if 'selected_student' in context.user_data:
+            logger.info(f"👌 Админ {uid} в диалоге добавления в группу, пропускаем")
+            return
+        
+        # Если админ не в диалоге - отправляем предупреждение
+        await update.message.reply_text("❌ Вы администратор. Используйте кнопки в админ-панели.")
+        return ConversationHandler.END
+    
+    # Для обычных пользователей - продолжаем
+    context.user_data['in_request'] = True
+    context.user_data['req_name'] = update.message.text
+    await update.message.reply_text("📞 Теперь напиши свой телефон (например, +375291234567):")
+    return REQUEST_PHONE
+
+async def request_phone(update, context):
+    """Обработчик телефона в заявке"""
+    uid = update.effective_user.id
+    
+    # Проверяем, что пользователь действительно в диалоге заявки
+    if not context.user_data.get('in_request'):
+        return ConversationHandler.END
+    
+    name = context.user_data.get('req_name')
+    phone = update.message.text
+    role = context.user_data.get('request_role', 'student')
+    username = update.effective_user.username or "нет"
+    role_text = "ученик" if role == "student" else "родитель"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    logger.info(f"📩 Заявка от {username} ({uid}): {name}, {phone}, роль: {role_text}")
+    
+    cursor.execute("""
+        INSERT INTO requests (user_id, username, name, phone, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (uid, username, name, phone, role, now))
+    conn.commit()
+    request_id = cursor.lastrowid
+    
+    sent_count = 0
+    for admin_id in ADMIN_IDS:
+        try:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Принять", callback_data=f"approve_req_{request_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_req_{request_id}")
+            ]])
+            
+            await context.bot.send_message(
+                admin_id, 
+                f"📩 Заявка #{request_id} от @{username}\n"
+                f"Имя: {name}\n"
+                f"Телефон: {phone}\n"
+                f"Роль: {role_text}\n"
+                f"ID: {uid}",
+                reply_markup=kb
+            )
+            sent_count += 1
+        except Exception as e:
+            logger.error(f"Ошибка отправки админу {admin_id}: {e}")
+    
+    if sent_count == 0:
+        await update.message.reply_text("❌ Техническая ошибка. Попробуйте позже или свяжитесь с администратором.")
+    else:
+        await update.message.reply_text(f"✅ Заявка #{request_id} отправлена администратору. Ожидайте подтверждения.")
+    
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # 1. Диалог заявки
 async def request_name(update, context):
