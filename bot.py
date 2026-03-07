@@ -11,7 +11,7 @@ import time
 import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Состояния для ConversationHandler
+# Состояния для ConversationHandler - ВАЖНО: сохраняем все состояния для правильной нумерации!
 (NAME, PHONE, TG_ID, PARENT_NAME, PARENT_PHONE, PARENT_TG, LESSONS, DAYS, 
  EXTEND_DAYS, GROUP_NAME, REQUEST_NAME, REQUEST_PHONE) = range(12)
 
@@ -277,13 +277,21 @@ async def check_expiring_memberships(context: ContextTypes.DEFAULT_TYPE):
                 pass
 
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
-async def add_student_entry(update, context): return NAME
-async def add_parent_entry(update, context): return PARENT_NAME
-async def add_group_entry(update, context): return GROUP_NAME
-async def role_entry(update, context): return REQUEST_NAME
+async def add_student_entry(update, context): 
+    logger.info("🔹 add_student_entry вызван")
+    return NAME
+
+async def add_group_entry(update, context): 
+    logger.info("🔹 add_group_entry вызван")
+    return GROUP_NAME
+
+async def role_entry(update, context): 
+    logger.info("🔹 role_entry вызван")
+    return REQUEST_NAME
+
 async def membership_lessons_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("🔹 membership_lessons_entry вызван")
     return LESSONS
-async def delete_attendance_entry(update, context): return DELETE_ATTENDANCE_DATE
 
 # ===== СТАРТ (БЕЗ РОДИТЕЛЕЙ) =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -677,8 +685,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- ДОБАВЛЕНИЕ УЧЕНИКА ---
     elif d == "add_student":
+        logger.info("🔹 Нажата кнопка add_student")
         await q.edit_message_text("✏️ Введите имя ученика:")
         return NAME
+
+    # --- ДОБАВЛЕНИЕ ГРУППЫ (ИСПРАВЛЕНО) ---
+    elif d == "add_group":
+        logger.info("🔹 Нажата кнопка add_group")
+        await q.edit_message_text("✏️ Введите название группы:")
+        return GROUP_NAME  # GROUP_NAME = 9
 
     # --- ДОБАВЛЕНИЕ АБОНЕМЕНТА ---
     elif d == "add_membership":
@@ -697,11 +712,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['membership_student'] = sid
         await q.edit_message_text("🔢 Введите количество занятий:")
         return LESSONS
-
-    # --- ДОБАВЛЕНИЕ ГРУППЫ ---
-    elif d == "add_group":
-        await q.edit_message_text("✏️ Введите название группы:")
-        return GROUP_NAME
 
     # --- ДОБАВЛЕНИЕ УЧЕНИКА В ГРУППУ ---
     elif d == "add_to_group":
@@ -1301,7 +1311,22 @@ async def add_student_id(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
-# 3. Диалог добавления абонемента
+# 3. Диалог добавления группы (ИСПРАВЛЕН)
+async def add_group_name(update, context):
+    name = update.message.text
+    logger.info(f"📝 add_group_name: получено название группы: {name}")
+    try:
+        cursor.execute("INSERT INTO groups (name) VALUES (?)", (name,))
+        conn.commit()
+        await update.message.reply_text(f"✅ Группа '{name}' создана")
+        logger.info(f"✅ Группа '{name}' создана")
+    except Exception as e:
+        logger.error(f"Ошибка создания группы: {e}")
+        await update.message.reply_text("❌ Ошибка (возможно, группа уже существует)")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# 4. Диалог добавления абонемента
 async def add_membership_lessons(update, context):
     try:
         lessons = int(update.message.text)
@@ -1395,19 +1420,6 @@ async def add_membership_final(update, context):
     
     context.user_data.clear()
 
-# 4. Диалог добавления группы
-async def add_group_name(update, context):
-    name = update.message.text
-    try:
-        cursor.execute("INSERT INTO groups (name) VALUES (?)", (name,))
-        conn.commit()
-        await update.message.reply_text(f"✅ Группа '{name}' создана")
-    except Exception as e:
-        logger.error(f"Ошибка создания группы: {e}")
-        await update.message.reply_text("❌ Ошибка (возможно, группа уже существует)")
-    context.user_data.clear()
-    return ConversationHandler.END
-
 # 5. Диалог продления абонемента
 async def extend_days_input(update, context):
     try:
@@ -1464,7 +1476,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("requests", show_requests))
     
-    # Диалог заявки - ВАЖНО: он должен быть первым!
+    # Диалог заявки
     app.add_handler(ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, request_name)],
         states={
@@ -1485,21 +1497,21 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
+    # Диалог добавления группы (ИСПРАВЛЕН)
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_group_entry, pattern="^add_group$")],
+        states={
+            GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_group_name)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    ))
+    
     # Диалог добавления абонемента
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(membership_lessons_entry, pattern="^select_student_membership_")],
         states={
             LESSONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_membership_lessons)],
             DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_membership_days)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-    ))
-    
-    # Диалог добавления группы
-    app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_group_entry, pattern="^add_group$")],
-        states={
-            GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_group_name)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
