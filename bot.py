@@ -1334,15 +1334,8 @@ async def add_student_id(update, context):
     return ConversationHandler.END
 
 # 3. Диалог добавления абонемента
+# 4. Диалог добавления абонемента
 async def add_membership_lessons(update, context):
-    """Обработчик ввода количества занятий при добавлении абонемента"""
-    logger.info(f"📝 add_membership_lessons: получено число: {update.message.text}")
-    
-    # Проверяем, что мы действительно в диалоге абонемента
-    if 'membership_student' not in context.user_data:
-        await update.message.reply_text("❌ Ошибка: начните добавление абонемента заново")
-        return ConversationHandler.END
-    
     try:
         lessons = int(update.message.text)
         if lessons <= 0:
@@ -1354,13 +1347,8 @@ async def add_membership_lessons(update, context):
     except ValueError:
         await update.message.reply_text("❌ Введите число")
         return LESSONS
-     
+
 async def add_membership_days(update, context):
-    # Проверяем, что мы действительно в диалоге абонемента
-    if 'mem_lessons' not in context.user_data:
-        await update.message.reply_text("❌ Ошибка: начните добавление абонемента заново")
-        return ConversationHandler.END
-    
     try:
         days = int(update.message.text)
         if days <= 0:
