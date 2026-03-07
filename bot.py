@@ -1618,17 +1618,27 @@ async def cancel(update, context):
     return ConversationHandler.END
 
 # ===== ЗАПУСК БОТА =====
+# ===== ЗАПУСК БОТА =====
 def main():
     """Главная функция запуска бота"""
     app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Принудительно сбрасываем вебхук
+    import asyncio
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
+    except:
+        pass
     
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("requests", show_requests))
     
-    # Диалог заявки
+    # ДИАЛОГ ЗАЯВКИ - ДОЛЖЕН БЫТЬ ПЕРВЫМ СРЕДИ ДИАЛОГОВ!
     app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(role_entry, pattern="^role_")],
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, request_name)],
         states={
             REQUEST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_name)],
             REQUEST_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_phone)],
@@ -1647,13 +1657,11 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
-    # Диалог добавления родителя
+    # Диалог добавления группы
     app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_parent_entry, pattern="^add_parent$")],
+        entry_points=[CallbackQueryHandler(add_group_entry, pattern="^add_group$")],
         states={
-            PARENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_parent_name)],
-            PARENT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_parent_phone)],
-            PARENT_TG: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_parent_id)],
+            GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_group_name)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
@@ -1668,14 +1676,30 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
-    # Диалог добавления группы
+    # Диалог продления
+    async def extend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        return EXTEND_DAYS
+    
     app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_group_entry, pattern="^add_group$")],
+        entry_points=[CallbackQueryHandler(extend_entry, pattern="^extend_student_")],
         states={
-            GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_group_name)],
+            EXTEND_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, extend_days_input)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
+    
+    # Обработчик всех callback-кнопок
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    # Планировщик задач
+    job_queue = app.job_queue
+    if job_queue:
+        job_queue.run_daily(check_expiring_memberships, time=dt.time(hour=10, minute=0))
+        logger.info("⏰ Запланирована ежедневная проверка истекающих абонементов в 10:00")
+
+    logger.info("🚀 Бот с исправленной заморозкой и системой заявок запущен")
+    app.run_polling()
+    
     
     # ===== ИСПРАВЛЕННЫЙ ДИАЛОГ ПРОДЛЕНИЯ =====
     # Функция входа в диалог продления
