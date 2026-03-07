@@ -1236,14 +1236,30 @@ async def show_mark_group(q, context, gid):
 
 # ===== ДИАЛОГИ =====
 
-# 1. Диалог заявки
+# 1. Диалог заявки - ИСПРАВЛЕНО с проверкой на админа
 async def request_name(update, context):
+    uid = update.effective_user.id
+    
+    # ЕСЛИ ЭТО АДМИН - НЕ ЗАПУСКАЕМ ДИАЛОГ ЗАЯВКИ!
+    if uid in ADMIN_IDS:
+        logger.warning(f"⚠️ Админ {uid} попытался войти в диалог заявки, игнорируем")
+        await update.message.reply_text("❌ Вы администратор. Используйте кнопки в админ-панели.")
+        return ConversationHandler.END
+    
     logger.info(f"📝 request_name: получено имя: {update.message.text}")
     context.user_data['req_name'] = update.message.text
     await update.message.reply_text("📞 Теперь напиши свой телефон (например, +375291234567):")
     return REQUEST_PHONE
 
 async def request_phone(update, context):
+    uid = update.effective_user.id
+    
+    # ЕСЛИ ЭТО АДМИН - НЕ ПРОДОЛЖАЕМ!
+    if uid in ADMIN_IDS:
+        logger.warning(f"⚠️ Админ {uid} попытался продолжить диалог заявки, игнорируем")
+        await update.message.reply_text("❌ Вы администратор. Используйте кнопки в админ-панели.")
+        return ConversationHandler.END
+    
     uid = update.effective_user.id
     name = context.user_data.get('req_name')
     phone = update.message.text
@@ -1289,7 +1305,6 @@ async def request_phone(update, context):
     
     context.user_data.clear()
     return ConversationHandler.END
-
 # 2. Диалог добавления ученика
 async def add_student_name(update, context):
     context.user_data['name'] = update.message.text
