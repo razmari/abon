@@ -101,6 +101,7 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS memberships (
     lessons_left INTEGER DEFAULT 0,
     valid_until TEXT,
     status TEXT DEFAULT 'active',
+    frozen_days INTEGER DEFAULT 0,
     FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
 )''')
 
@@ -135,7 +136,7 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS last_mark (
     mark_type INTEGER
 )''')
 
-# ===== ТАБЛИЦА ДЛЯ ЗАЯВОК (НОВАЯ) =====
+# ===== ТАБЛИЦА ДЛЯ ЗАЯВОК =====
 cursor.execute('''CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
@@ -158,6 +159,13 @@ except:
 try:
     cursor.execute("ALTER TABLE parents ADD COLUMN notifications INTEGER DEFAULT 1")
     logger.info("✅ Добавлена колонка notifications в parents")
+except:
+    pass
+
+# Колонка frozen_days уже создана в таблице memberships, но на всякий случай проверим
+try:
+    cursor.execute("ALTER TABLE memberships ADD COLUMN frozen_days INTEGER DEFAULT 0")
+    logger.info("✅ Добавлена колонка frozen_days в memberships")
 except:
     pass
 conn.commit()
@@ -680,7 +688,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_requests(update, context)
         return
 
-    # --- ОДОБРЕНИЕ ЗАЯВОК (НОВАЯ ВЕРСИЯ) ---
+    # --- ОДОБРЕНИЕ ЗАЯВОК ---
     elif d.startswith("approve_req_"):
         request_id = int(d.split("_")[2])
         
@@ -836,7 +844,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         await q.edit_message_text("✅ Привязано", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="link_parent")]]))
 
-    # --- ЗАМОРОЗКА АБОНЕМЕНТА ---
+    # --- ЗАМОРОЗКА (ИСПРАВЛЕННАЯ ВЕРСИЯ) ---
     elif d == "freeze_menu":
         students = cursor.execute("SELECT id, name FROM students ORDER BY name").fetchall()
         if students:
@@ -848,8 +856,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif d.startswith("freeze_student_"):
         sid = int(d.split("_")[2])
+        # Показываем абонементы с занятиями > 0, включая frozen_days
         memberships = cursor.execute("""
-            SELECT m.id, m.lessons_left, m.valid_until, m.status 
+            SELECT m.id, m.lessons_left, m.valid_until, m.status, m.frozen_days 
             FROM memberships m
             WHERE m.student_id = ? AND m.status != 'inactive' AND m.lessons_left > 0
             ORDER BY m.valid_until ASC
@@ -859,7 +868,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = []
             for m in memberships:
                 status_emoji = "✅" if m[3] == "active" else "❄️"
-                btn_text = f"{status_emoji} {m[1]} занятий до {m[2]}"
+                # Показываем информацию о заморозке
+                if m[3] == "frozen" and m[4] > 0:
+                    btn_text = f"{status_emoji} {m[1]} занятий (заморожен, оставалось {m[4]} дн.)"
+                elif m[3] == "frozen":
+                    btn_text = f"{status_emoji} {m[1]} занятий (заморожен, срок истёк)"
+                else:
+                    btn_text = f"{status_emoji} {m[1]} занятий до {m[2]}"
+                
                 cb_data = f"toggle_freeze_{m[0]}_{m[3]}"
                 kb.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
             kb.append([InlineKeyboardButton("🔙 Назад", callback_data="freeze_menu")])
@@ -867,23 +883,74 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.edit_message_text("Нет активных абонементов с занятиями", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="freeze_menu")]]))
 
+    # --- ЗАМОРОЗКА С УЧЁТОМ СРОКА ДЕЙСТВИЯ ---
     elif d.startswith("toggle_freeze_"):
         parts = d.split("_")
         mid = int(parts[2])
         current_status = parts[3]
-
-        new_status = "frozen" if current_status == "active" else "active"
-        cursor.execute("UPDATE memberships SET status = ? WHERE id = ?", (new_status, mid))
+        today = datetime.now().date()
+        
+        if current_status == "active":
+            # ЗАМОРОЗКА: сохраняем, сколько дней осталось
+            membership = cursor.execute("""
+                SELECT valid_until, frozen_days FROM memberships WHERE id = ?
+            """, (mid,)).fetchone()
+            
+            if membership:
+                valid_until = datetime.strptime(membership[0], "%Y-%m-%d").date()
+                days_left = (valid_until - today).days
+                
+                if days_left < 0:
+                    days_left = 0
+                
+                # Обновляем: статус frozen и сохраняем оставшиеся дни
+                cursor.execute("""
+                    UPDATE memberships 
+                    SET status = 'frozen', frozen_days = ? 
+                    WHERE id = ?
+                """, (days_left, mid))
+                
+                status_text = f"❄️ заморожен (оставалось {days_left} дн.)"
+                logger.info(f"❄️ Абонемент {mid} заморожен, оставалось дней: {days_left}")
+        else:
+            # РАЗМОРОЗКА: продлеваем на сохранённое количество дней
+            membership = cursor.execute("""
+                SELECT valid_until, frozen_days FROM memberships WHERE id = ?
+            """, (mid,)).fetchone()
+            
+            if membership:
+                frozen_days = membership[1]
+                
+                if frozen_days > 0:
+                    # Продлеваем дату на frozen_days от сегодня
+                    new_valid_until = (today + timedelta(days=frozen_days)).strftime("%Y-%m-%d")
+                    
+                    cursor.execute("""
+                        UPDATE memberships 
+                        SET status = 'active', valid_until = ?, frozen_days = 0 
+                        WHERE id = ?
+                    """, (new_valid_until, mid))
+                    
+                    status_text = f"✅ разморожен, новый срок до {new_valid_until}"
+                    logger.info(f"✅ Абонемент {mid} разморожен, новый срок: {new_valid_until}")
+                else:
+                    # Если frozen_days = 0, просто активируем
+                    cursor.execute("""
+                        UPDATE memberships 
+                        SET status = 'active', frozen_days = 0 
+                        WHERE id = ?
+                    """, (mid,))
+                    status_text = "✅ разморожен (срок истёк)"
+        
         conn.commit()
-
-        status_text = "❄️ заморожен" if new_status == "frozen" else "✅ разморожен"
         await q.answer(f"Абонемент {status_text}")
         
+        # Обновляем отображение списка абонементов
         mem_info = cursor.execute("SELECT student_id FROM memberships WHERE id = ?", (mid,)).fetchone()
         if mem_info:
             sid = mem_info[0]
             memberships = cursor.execute("""
-                SELECT m.id, m.lessons_left, m.valid_until, m.status 
+                SELECT m.id, m.lessons_left, m.valid_until, m.status, m.frozen_days 
                 FROM memberships m
                 WHERE m.student_id = ? AND m.status != 'inactive' AND m.lessons_left > 0
                 ORDER BY m.valid_until ASC
@@ -893,7 +960,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 kb = []
                 for m in memberships:
                     status_emoji = "✅" if m[3] == "active" else "❄️"
-                    btn_text = f"{status_emoji} {m[1]} занятий до {m[2]}"
+                    # Показываем информацию о заморозке
+                    if m[3] == "frozen" and m[4] > 0:
+                        btn_text = f"{status_emoji} {m[1]} занятий (заморожен, оставалось {m[4]} дн.)"
+                    elif m[3] == "frozen":
+                        btn_text = f"{status_emoji} {m[1]} занятий (заморожен, срок истёк)"
+                    else:
+                        btn_text = f"{status_emoji} {m[1]} занятий до {m[2]}"
+                    
                     cb_data = f"toggle_freeze_{m[0]}_{m[3]}"
                     kb.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
                 kb.append([InlineKeyboardButton("🔙 Назад", callback_data="freeze_menu")])
@@ -1411,20 +1485,26 @@ async def add_parent_id(update, context):
 async def add_membership_lessons(update, context):
     try:
         lessons = int(update.message.text)
+        if lessons <= 0:
+            await update.message.reply_text("❌ Введите положительное число")
+            return LESSONS
         context.user_data['mem_lessons'] = lessons
         await update.message.reply_text("📅 Введите количество дней действия:")
         return DAYS
-    except:
+    except ValueError:
         await update.message.reply_text("❌ Введите число")
         return LESSONS
 
 async def add_membership_days(update, context):
     try:
         days = int(update.message.text)
+        if days <= 0:
+            await update.message.reply_text("❌ Введите положительное число")
+            return DAYS
         context.user_data['mem_days'] = days
         await add_membership_final(update, context)
         return ConversationHandler.END
-    except:
+    except ValueError:
         await update.message.reply_text("❌ Введите число")
         return DAYS
 
@@ -1444,6 +1524,7 @@ async def add_membership_final(update, context):
         days = context.user_data.get('mem_days')
         new_valid_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
         
+        # Проверяем существующие абонементы с долгом
         total_balance = cursor.execute("""
             SELECT SUM(lessons_left) FROM memberships
             WHERE student_id = ? AND status = 'active'
@@ -1453,6 +1534,7 @@ async def add_membership_final(update, context):
             debt = abs(total_balance)
             
             if new_lessons <= debt:
+                # Частично погашаем долг
                 cursor.execute("""
                     UPDATE memberships SET lessons_left = lessons_left + ?
                     WHERE student_id = ? AND status = 'active'
@@ -1461,6 +1543,7 @@ async def add_membership_final(update, context):
                     f"✅ Долг частично погашен. Текущий баланс: {total_balance + new_lessons}"
                 )
             else:
+                # Погашаем долг и создаём новый абонемент на остаток
                 remaining = new_lessons - debt
                 
                 cursor.execute("""
@@ -1469,17 +1552,18 @@ async def add_membership_final(update, context):
                 """, (student_id,))
                 
                 cursor.execute("""
-                    INSERT INTO memberships (student_id, lessons_left, valid_until, status)
-                    VALUES (?, ?, ?, 'active')
+                    INSERT INTO memberships (student_id, lessons_left, valid_until, status, frozen_days)
+                    VALUES (?, ?, ?, 'active', 0)
                 """, (student_id, remaining, new_valid_until))
                 
                 await update.message.reply_text(
                     f"✅ Долг погашен. Остаток {remaining} занятий зачислен на новый абонемент (до {new_valid_until})"
                 )
         else:
+            # Просто добавляем новый абонемент
             cursor.execute("""
-                INSERT INTO memberships (student_id, lessons_left, valid_until, status)
-                VALUES (?, ?, ?, 'active')
+                INSERT INTO memberships (student_id, lessons_left, valid_until, status, frozen_days)
+                VALUES (?, ?, ?, 'active', 0)
             """, (student_id, new_lessons, new_valid_until))
             
             await update.message.reply_text(
@@ -1494,7 +1578,6 @@ async def add_membership_final(update, context):
         await update.message.reply_text(f"❌ Ошибка: {e}")
     
     context.user_data.clear()
-    return ConversationHandler.END
 
 # 5. Диалог добавления группы
 async def add_group_name(update, context):
@@ -1513,6 +1596,10 @@ async def add_group_name(update, context):
 async def extend_days_input(update, context):
     try:
         days = int(update.message.text)
+        if days <= 0:
+            await update.message.reply_text("❌ Введите положительное число")
+            return EXTEND_DAYS
+            
         sid = context.user_data.get('extend_student')
         if not sid:
             await update.message.reply_text("❌ Ошибка: ученик не выбран")
@@ -1603,14 +1690,21 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
-    # Диалог продления
+    # ===== ИСПРАВЛЕННЫЙ ДИАЛОГ ПРОДЛЕНИЯ =====
+    # Функция входа в диалог продления
+    async def extend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Вход в диалог продления"""
+        return EXTEND_DAYS
+    
+    # Добавляем диалог продления с исправленной функцией
     app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u,c: EXTEND_DAYS, pattern="^extend_student_")],
+        entry_points=[CallbackQueryHandler(extend_entry, pattern="^extend_student_")],
         states={
             EXTEND_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, extend_days_input)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
+    # ===== КОНЕЦ ИСПРАВЛЕНИЯ =====
     
     # Обработчик всех callback-кнопок (должен быть последним)
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -1621,7 +1715,7 @@ def main():
         job_queue.run_daily(check_expiring_memberships, time=dt.time(hour=10, minute=0))
         logger.info("⏰ Запланирована ежедневная проверка истекающих абонементов в 10:00")
 
-    logger.info("🚀 Бот с исправленной системой заявок запущен")
+    logger.info("🚀 Бот с исправленной заморозкой и системой заявок запущен")
     app.run_polling()
 
 if __name__ == "__main__":
