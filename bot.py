@@ -1219,51 +1219,16 @@ async def show_mark_group(q, context, gid):
         if "Message is not modified" not in str(e):
             logger.error(f"Ошибка при обновлении сообщения: {e}")
 
-# ===== ДИАЛОГИ =====
+# ===== ДИАЛОГИ (ConversationHandler) =====
 
-# 1. Диалог заявки - ТОЧКА ВХОДА
-async def request_name_entry(update, context):
-    """ТОЧКА ВХОДА в диалог заявки - срабатывает на любое сообщение"""
-    uid = update.effective_user.id
-    
-    # ЕСЛИ ЭТО АДМИН
-    if uid in ADMIN_IDS:
-        logger.warning(f"⚠️ Админ {uid} попытался войти в диалог заявки, игнорируем")
-        
-        # ПРОВЕРЯЕМ, В КАКОМ ДИАЛОГЕ АДМИН
-        if 'membership_student' in context.user_data:
-            # Это диалог добавления абонемента - пропускаем
-            logger.info(f"👌 Админ {uid} в диалоге абонемента, продолжаем")
-            return ConversationHandler.END
-        
-        if 'extend_student' in context.user_data:
-            # Это диалог продления - пропускаем
-            logger.info(f"👌 Админ {uid} в диалоге продления, продолжаем")
-            return ConversationHandler.END
-        
-        if 'selected_student' in context.user_data:
-            # Это диалог добавления в группу - пропускаем
-            logger.info(f"👌 Админ {uid} в диалоге добавления в группу, продолжаем")
-            return ConversationHandler.END
-        
-        # Если админ не в диалоге - отправляем предупреждение
-        await update.message.reply_text("❌ Вы администратор. Используйте кнопки в админ-панели.")
-        return ConversationHandler.END
-    
-    # Для обычных пользователей - продолжаем
-    context.user_data['in_request'] = True
+# 1. Диалог заявки
+async def request_name(update, context):
     context.user_data['req_name'] = update.message.text
     await update.message.reply_text("📞 Теперь напиши свой телефон (например, +375291234567):")
     return REQUEST_PHONE
 
 async def request_phone(update, context):
-    """Обработчик телефона в заявке"""
     uid = update.effective_user.id
-    
-    # Проверяем, что пользователь действительно в диалоге заявки
-    if not context.user_data.get('in_request'):
-        return ConversationHandler.END
-    
     name = context.user_data.get('req_name')
     phone = update.message.text
     role = context.user_data.get('request_role', 'student')
@@ -1273,6 +1238,7 @@ async def request_phone(update, context):
     
     logger.info(f"📩 Заявка от {username} ({uid}): {name}, {phone}, роль: {role_text}")
     
+    # Сохраняем заявку в БД
     cursor.execute("""
         INSERT INTO requests (user_id, username, name, phone, role, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -1280,6 +1246,7 @@ async def request_phone(update, context):
     conn.commit()
     request_id = cursor.lastrowid
     
+    # Отправляем админам с ID заявки
     sent_count = 0
     for admin_id in ADMIN_IDS:
         try:
@@ -1314,7 +1281,7 @@ async def add_student_name(update, context):
     context.user_data['name'] = update.message.text
     await update.message.reply_text("📞 Введите телефон (например, +375291234567):")
     return PHONE
- 
+
 async def add_student_phone(update, context):
     context.user_data['phone'] = update.message.text
     await update.message.reply_text("🆔 Введите Telegram ID (число):")
@@ -1333,7 +1300,30 @@ async def add_student_id(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
-# 3. Диалог добавления абонемента
+# 3. Диалог добавления родителя
+async def add_parent_name(update, context):
+    context.user_data['name'] = update.message.text
+    await update.message.reply_text("📞 Введите телефон (например, +375291234567):")
+    return PARENT_PHONE
+
+async def add_parent_phone(update, context):
+    context.user_data['phone'] = update.message.text
+    await update.message.reply_text("🆔 Введите Telegram ID (число):")
+    return PARENT_TG
+
+async def add_parent_id(update, context):
+    try:
+        tid = int(update.message.text)
+        cursor.execute("INSERT INTO parents (telegram_id, name, phone) VALUES (?, ?, ?)", 
+                      (tid, context.user_data['name'], context.user_data['phone']))
+        conn.commit()
+        await update.message.reply_text("✅ Родитель добавлен")
+    except Exception as e:
+        logger.error(f"Ошибка добавления родителя: {e}")
+        await update.message.reply_text("❌ Ошибка")
+    context.user_data.clear()
+    return ConversationHandler.END
+
 # 4. Диалог добавления абонемента
 async def add_membership_lessons(update, context):
     try:
@@ -1432,10 +1422,9 @@ async def add_membership_final(update, context):
     
     context.user_data.clear()
 
-# 4. Диалог добавления группы
+# 5. Диалог добавления группы
 async def add_group_name(update, context):
     name = update.message.text
-    logger.info(f"📝 add_group_name: получено название группы: {name}")
     try:
         cursor.execute("INSERT INTO groups (name) VALUES (?)", (name,))
         conn.commit()
@@ -1446,7 +1435,7 @@ async def add_group_name(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
-# 5. Диалог продления абонемента
+# 6. Диалог продления абонемента
 async def extend_days_input(update, context):
     try:
         days = int(update.message.text)
@@ -1478,7 +1467,7 @@ async def extend_days_input(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
-# 6. Отмена диалога
+# 7. Отмена диалога
 async def cancel(update, context):
     await update.message.reply_text("❌ Отменено")
     context.user_data.clear()
@@ -1489,23 +1478,15 @@ def main():
     """Главная функция запуска бота"""
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Принудительно сбрасываем вебхук
-    import asyncio
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
-    except:
-        pass
-    
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("requests", show_requests))
     
-    # Диалог заявки - ИСПРАВЛЕНО
+    # Диалог заявки
     app.add_handler(ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, request_name_entry)],
+        entry_points=[CallbackQueryHandler(role_entry, pattern="^role_")],
         states={
+            REQUEST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_name)],
             REQUEST_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_phone)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
@@ -1522,13 +1503,6 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
-    # Диалог добавления группы
-    app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_group_entry, pattern="^add_group$")],
-        states={
-            GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_group_name)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
     # Диалог добавления абонемента
@@ -1541,10 +1515,22 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
     
-    # Диалог продления
+    # Диалог добавления группы
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_group_entry, pattern="^add_group$")],
+        states={
+            GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_group_name)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    ))
+    
+    # ===== ИСПРАВЛЕННЫЙ ДИАЛОГ ПРОДЛЕНИЯ =====
+    # Функция входа в диалог продления
     async def extend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Вход в диалог продления"""
         return EXTEND_DAYS
     
+    # Добавляем диалог продления с исправленной функцией
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(extend_entry, pattern="^extend_student_")],
         states={
@@ -1552,8 +1538,9 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
+    # ===== КОНЕЦ ИСПРАВЛЕНИЯ =====
     
-    # Обработчик всех callback-кнопок
+    # Обработчик всех callback-кнопок (должен быть последним)
     app.add_handler(CallbackQueryHandler(button_handler))
 
     # Планировщик задач
@@ -1567,3 +1554,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
