@@ -1484,9 +1484,8 @@ def main():
     
     # Диалог заявки
     app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(role_entry, pattern="^role_")],
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, request_name_entry)],
         states={
-            REQUEST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_name)],
             REQUEST_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, request_phone)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
