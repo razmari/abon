@@ -315,6 +315,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📋 Заявки", callback_data="admin_requests")],
         ]
         await update.message.reply_text("🔐 Админ-панель", reply_markup=InlineKeyboardMarkup(kb))
+        # ВАЖНО: очищаем user_data и завершаем диалог
+        context.user_data.clear()
         return ConversationHandler.END
     
     # Для учеников
@@ -327,6 +329,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notif_text = "🔔 Уведомления вкл" if student[2] == 1 else "🔕 Уведомления выкл"
         kb.append([InlineKeyboardButton(notif_text, callback_data="toggle_student_notifications")])
         await update.message.reply_text(f"👋 {student[1]}", reply_markup=InlineKeyboardMarkup(kb))
+        context.user_data.clear()
         return ConversationHandler.END
     
     # Для новых пользователей - сразу запрашиваем ФИО
