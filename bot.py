@@ -1502,7 +1502,8 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
-    
+
+ 
     ))
     
     # Диалог добавления абонемента
