@@ -1220,7 +1220,7 @@ async def show_mark_group(q, context, gid):
 
 # ===== ДИАЛОГИ =====
 
-# 1. Диалог заявки - ИСПРАВЛЕНО
+# 1. Диалог заявки - ТОЧКА ВХОДА
 async def request_name_entry(update, context):
     """ТОЧКА ВХОДА в диалог заявки - срабатывает на любое сообщение"""
     uid = update.effective_user.id
@@ -1233,7 +1233,7 @@ async def request_name_entry(update, context):
         if 'membership_student' in context.user_data:
             # Это диалог добавления абонемента - пропускаем
             logger.info(f"👌 Админ {uid} в диалоге абонемента, продолжаем")
-            return ConversationHandler.END  # Просто выходим, не отправляя сообщение
+            return ConversationHandler.END
         
         if 'extend_student' in context.user_data:
             # Это диалог продления - пропускаем
@@ -1244,7 +1244,17 @@ async def request_name_entry(update, context):
             # Это диалог добавления в группу - пропускаем
             logger.info(f"👌 Админ {uid} в диалоге добавления в группу, продолжаем")
             return ConversationHandler.END
-         
+        
+        # Если админ не в диалоге - отправляем предупреждение
+        await update.message.reply_text("❌ Вы администратор. Используйте кнопки в админ-панели.")
+        return ConversationHandler.END
+    
+    # Для обычных пользователей - продолжаем
+    context.user_data['in_request'] = True
+    context.user_data['req_name'] = update.message.text
+    await update.message.reply_text("📞 Теперь напиши свой телефон (например, +375291234567):")
+    return REQUEST_PHONE
+
 async def request_phone(update, context):
     """Обработчик телефона в заявке"""
     uid = update.effective_user.id
@@ -1297,23 +1307,13 @@ async def request_phone(update, context):
     
     context.user_data.clear()
     return ConversationHandler.END
-        
-        # Если админ не в диалоге - отправляем предупреждение
-        await update.message.reply_text("❌ Вы администратор. Используйте кнопки в админ-панели.")
-        return ConversationHandler.END
-    
-    # Для обычных пользователей - продолжаем
-    context.user_data['in_request'] = True
-    context.user_data['req_name'] = update.message.text
-    await update.message.reply_text("📞 Теперь напиши свой телефон (например, +375291234567):")
-    return REQUEST_PHONE
 
 # 2. Диалог добавления ученика
 async def add_student_name(update, context):
     context.user_data['name'] = update.message.text
     await update.message.reply_text("📞 Введите телефон (например, +375291234567):")
     return PHONE
-
+ 
 async def add_student_phone(update, context):
     context.user_data['phone'] = update.message.text
     await update.message.reply_text("🆔 Введите Telegram ID (число):")
