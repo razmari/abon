@@ -1312,17 +1312,6 @@ async def request_name(update, context):
     context.user_data['req_name'] = update.message.text
     await update.message.reply_text("📞 Теперь напиши свой телефон (например, +375291234567):")
     return REQUEST_PHONE
-
-async def request_phone(update, context):
-    uid = update.effective_user.id
-    name = context.user_data.get('req_name')
-    phone = update.message.text
-    role = context.user_data.get('request_role', 'student')
-    username = update.effective_user.username or "нет"
-    role_text = "ученик" if role == "student" else "родитель"
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    logger.info(f"📩 Заявка от {username} ({uid}): {name}, {phone}, роль: {role_text}")
     
     # Сохраняем заявку в БД
     cursor.execute("""
