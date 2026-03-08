@@ -611,6 +611,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- ОДОБРЕНИЕ ЗАЯВОК ---
+    # --- ОДОБРЕНИЕ ЗАЯВОК ---
     elif d.startswith("approve_req_"):
         request_id = int(d.split("_")[2])
         
@@ -627,22 +628,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id, name, phone, role = request
         
         try:
-            if role == "student":
-                cursor.execute("INSERT INTO students (telegram_id, name, phone) VALUES (?, ?, ?)", 
-                             (user_id, name, phone))
+            # Проверяем, есть ли уже ученик с таким telegram_id
+            existing = cursor.execute("SELECT id FROM students WHERE telegram_id = ?", (user_id,)).fetchone()
             
-            cursor.execute("UPDATE requests SET status = 'approved' WHERE id = ?", (request_id,))
-            conn.commit()
-            
-            await q.edit_message_text(f"✅ Заявка #{request_id} одобрена, {name} добавлен как {role}")
-            
-            try:
+            if existing:
+                # Если уже есть - просто обновляем статус заявки
+                cursor.execute("UPDATE requests SET status = 'approved' WHERE id = ?", (request_id,))
+                conn.commit()
+                await q.edit_message_text(f"✅ Заявка #{request_id} одобрена (ученик уже существовал)")
+                await context.bot.send_message(
+                    user_id, 
+                    f"✅ Ты уже был в системе! Напиши /start"
+                )
+            else:
+                # Если нет - добавляем нового
+                if role == "student":
+                    cursor.execute("INSERT INTO students (telegram_id, name, phone) VALUES (?, ?, ?)", 
+                                 (user_id, name, phone))
+                
+                cursor.execute("UPDATE requests SET status = 'approved' WHERE id = ?", (request_id,))
+                conn.commit()
+                
+                await q.edit_message_text(f"✅ Заявка #{request_id} одобрена, {name} добавлен как {role}")
+                
                 await context.bot.send_message(
                     user_id, 
                     f"✅ Администратор добавил тебя как **{role}**!\nНапиши /start"
                 )
-            except:
-                logger.warning(f"Не удалось уведомить пользователя {user_id}")
                 
         except Exception as e:
             logger.error(f"Ошибка при одобрении заявки: {e}")
